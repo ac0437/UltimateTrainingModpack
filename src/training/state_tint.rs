@@ -82,9 +82,12 @@ unsafe fn ledge_tint(status: i32) -> Option<Tint> {
 unsafe fn tech_tint(module_accessor: *mut BattleObjectModuleAccessor, status: i32) -> Option<Tint> {
     // Roll direction is read from the motion, the same way tech.rs swaps it in change_motion
     let motion = MotionModule::motion_kind(module_accessor);
-    let rolling_forward =
-        [hash40("passive_stand_f"), hash40("down_forward_u"), hash40("down_forward_d")]
-            .contains(&motion);
+    let rolling_forward = [
+        hash40("passive_stand_f"),
+        hash40("down_forward_u"),
+        hash40("down_forward_d"),
+    ]
+    .contains(&motion);
 
     Some(match status {
         // Successful tech
