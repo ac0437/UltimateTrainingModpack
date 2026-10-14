@@ -15,8 +15,8 @@ use smash::app::BattleObjectModuleAccessor;
 use smash::hash40;
 use smash::lib::lua_const::*;
 
-use crate::common::consts::OnOff;
-use crate::common::{is_fighter, is_in_hitstun, MENU};
+use crate::common::consts::{FighterId, OnOff};
+use crate::common::{is_fighter, is_in_hitstun, try_get_module_accessor, MENU};
 use crate::training::input_record::{set_color_rgb_2, PossessionState, POSSESSION};
 use training_mod_sync::*;
 
@@ -39,16 +39,36 @@ const fn rgb(r: f32, g: f32, b: f32) -> Tint {
 const FREE: Tint = rgb(0.0, 1.0, 0.0); // green: not in hitstun
 const HITSTUN: Tint = rgb(1.0, 0.0, 0.0); // red: in hitstun with no DI (stick near neutral)
 
-// DI direction while in hitstun (absolute screen directions, not relative to the opponent).
-// Green and red are left out on purpose: they already mean "free" and "hitstun, no DI".
-const DI_RIGHT: Tint = rgb(0.2, 0.4, 1.0); // blue
-const DI_UP_RIGHT: Tint = rgb(0.0, 1.0, 1.0); // cyan
-const DI_UP: Tint = rgb(1.0, 1.0, 1.0); // white
-const DI_UP_LEFT: Tint = rgb(1.0, 1.0, 0.0); // yellow
-const DI_LEFT: Tint = rgb(1.0, 0.5, 0.0); // orange
-const DI_DOWN_LEFT: Tint = rgb(1.0, 0.4, 0.8); // pink
-const DI_DOWN: Tint = rgb(1.0, 0.0, 1.0); // magenta
-const DI_DOWN_RIGHT: Tint = rgb(0.6, 0.2, 1.0); // purple
+// DI direction while in hitstun. Green and red are left out of both palettes on purpose:
+// they already mean "free" and "hitstun, no DI".
+//
+// Both palettes are indexed by the 45-degree sector of the stick, counterclockwise starting
+// at "stick right" (compass) or "stick toward the opponent" (In/Out):
+//   0 right/In, 1 up-right/Up In, 2 up, 3 up-left/Up Out, 4 left/Out,
+//   5 down-left/Down Out, 6 down, 7 down-right/Down In
+//
+// Compass: absolute screen directions.
+const DI_COMPASS: [Tint; 8] = [
+    rgb(0.2, 0.4, 1.0), // right: blue
+    rgb(0.0, 1.0, 1.0), // up-right: cyan
+    rgb(1.0, 1.0, 1.0), // up: white
+    rgb(1.0, 1.0, 0.0), // up-left: yellow
+    rgb(1.0, 0.5, 0.0), // left: orange
+    rgb(1.0, 0.4, 0.8), // down-left: pink
+    rgb(1.0, 0.0, 1.0), // down: magenta
+    rgb(0.6, 0.2, 1.0), // down-right: purple
+];
+// In/Out: relative to the opponent. Warm colors lean In, cool colors lean Out.
+const DI_IN_OUT: [Tint; 8] = [
+    rgb(1.0, 0.5, 0.0), // In: orange
+    rgb(1.0, 1.0, 0.0), // Up In: yellow
+    rgb(1.0, 1.0, 1.0), // Up: white
+    rgb(0.0, 1.0, 1.0), // Up Out: cyan
+    rgb(0.2, 0.4, 1.0), // Out: blue
+    rgb(0.6, 0.2, 1.0), // Down Out: purple
+    rgb(1.0, 0.0, 1.0), // Down: magenta
+    rgb(1.0, 0.4, 0.8), // Down In: pink
+];
 
 // Stick magnitude below this counts as "no DI"
 const DI_DEADZONE: f32 = 0.3;
@@ -149,12 +169,31 @@ unsafe fn tech_tint(module_accessor: *mut BattleObjectModuleAccessor, status: i3
     })
 }
 
+/// +1.0 if the opponent is to the right of this fighter, -1.0 if to the left.
+/// `None` if the opponent can't be found.
+unsafe fn opponent_side(module_accessor: *mut BattleObjectModuleAccessor) -> Option<f32> {
+    let own_id = WorkModule::get_int(module_accessor, *FIGHTER_INSTANCE_WORK_ID_INT_ENTRY_ID);
+    let opponent_id = if own_id == FighterId::Player as i32 {
+        FighterId::CPU
+    } else {
+        FighterId::Player
+    };
+    let opponent = try_get_module_accessor(opponent_id)?;
+    Some(
+        if PostureModule::pos_x(opponent) >= PostureModule::pos_x(module_accessor) {
+            1.0
+        } else {
+            -1.0
+        },
+    )
+}
+
 /// Color for the DI the fighter took on this hit, or `None` if the stick was near neutral.
 ///
 /// Reads the same work floats that directional_influence.rs writes for the CPU's DI option.
 /// For a human-controlled fighter the game fills them from the stick when the hit lands.
 unsafe fn di_tint(module_accessor: *mut BattleObjectModuleAccessor) -> Option<Tint> {
-    let x = WorkModule::get_float(
+    let mut x = WorkModule::get_float(
         module_accessor,
         *FIGHTER_STATUS_DAMAGE_WORK_FLOAT_VECOR_CORRECT_STICK_X,
     );
@@ -166,19 +205,20 @@ unsafe fn di_tint(module_accessor: *mut BattleObjectModuleAccessor) -> Option<Ti
         return None;
     }
 
+    // In/Out mode: mirror x so that "toward the opponent" is always +x, then use the In/Out
+    // palette. If the opponent can't be found, fall back to the compass palette.
+    let mut palette = &DI_COMPASS;
+    if read(&MENU).state_tint_in_out == OnOff::ON {
+        if let Some(side) = opponent_side(module_accessor) {
+            x *= side;
+            palette = &DI_IN_OUT;
+        }
+    }
+
     // Split the circle into eight 45-degree sectors centered on the compass directions
     let degrees = y.atan2(x).to_degrees();
-    let sector = ((degrees + 22.5) / 45.0).floor().rem_euclid(8.0) as i32;
-    Some(match sector {
-        0 => DI_RIGHT,
-        1 => DI_UP_RIGHT,
-        2 => DI_UP,
-        3 => DI_UP_LEFT,
-        4 => DI_LEFT,
-        5 => DI_DOWN_LEFT,
-        6 => DI_DOWN,
-        _ => DI_DOWN_RIGHT,
-    })
+    let sector = ((degrees + 22.5) / 45.0).floor().rem_euclid(8.0) as usize;
+    Some(palette[sector.min(7)])
 }
 
 unsafe fn pick_tint(module_accessor: *mut BattleObjectModuleAccessor) -> Tint {

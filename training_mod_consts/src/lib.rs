@@ -63,6 +63,7 @@ pub struct TrainingModpackMenu {
     pub shield_tilt: Direction,
     pub stage_hazards: OnOff,
     pub state_tint: OnOff,
+    pub state_tint_in_out: OnOff,
     pub tech_state: TechFlags,
     pub throw_delay: MedDelay,
     pub throw_state: ThrowOption,
@@ -156,6 +157,7 @@ pub static BASE_MENU: TrainingModpackMenu = TrainingModpackMenu {
     shield_tilt: Direction::empty(),
     stage_hazards: OnOff::OFF,
     state_tint: OnOff::OFF,
+    state_tint_in_out: OnOff::ON,
     tech_state: TechFlags::all(),
     throw_delay: MedDelay::empty(),
     throw_state: ThrowOption::NONE,
@@ -738,6 +740,13 @@ pub unsafe fn create_app<'a>() -> App<'a> {
         "State Tint",
         "state_tint",
         "Tint fighters green normally and by DI direction during hitstun (red if no DI). Tech and ledge options get their own colors.",
+        ToggleSingle,
+        false,
+    ));
+    misc_tab_submenus.push(OnOff::to_submenu(
+        "State Tint: DI In/Out",
+        "state_tint_in_out",
+        "On: color DI as In/Out relative to the opponent (warm = In, cool = Out). Off: color DI by screen direction.",
         ToggleSingle,
         false,
     ));
