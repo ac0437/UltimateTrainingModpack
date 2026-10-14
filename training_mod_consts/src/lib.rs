@@ -26,6 +26,7 @@ pub struct TrainingModpackMenu {
     pub buff_state: BuffOption,
     pub character_item: CharacterItem,
     pub clatter_strength: ClatterFrequency,
+    pub combo_check: OnOff,
     pub crouch: OnOff,
     pub di_state: Direction,
     pub falling_aerials: BoolFlag,
@@ -35,6 +36,7 @@ pub struct TrainingModpackMenu {
     pub frame_advantage: OnOff,
     pub full_hop: BoolFlag,
     pub hitbox_vis: OnOff,
+    pub hitbox_info: OnOff,
     pub input_display: InputDisplay,
     pub input_display_status: OnOff,
     pub hud: OnOff,
@@ -63,6 +65,7 @@ pub struct TrainingModpackMenu {
     pub shield_tilt: Direction,
     pub stage_hazards: OnOff,
     pub state_tint: OnOff,
+    pub state_tint_in_out: OnOff,
     pub tech_state: TechFlags,
     pub throw_delay: MedDelay,
     pub throw_state: ThrowOption,
@@ -119,6 +122,7 @@ pub static BASE_MENU: TrainingModpackMenu = TrainingModpackMenu {
     buff_state: BuffOption::empty(),
     character_item: CharacterItem::NONE,
     clatter_strength: ClatterFrequency::NONE,
+    combo_check: OnOff::OFF,
     crouch: OnOff::OFF,
     di_state: Direction::empty(),
     falling_aerials: BoolFlag::FALSE,
@@ -128,6 +132,7 @@ pub static BASE_MENU: TrainingModpackMenu = TrainingModpackMenu {
     frame_advantage: OnOff::OFF,
     full_hop: BoolFlag::TRUE,
     hitbox_vis: OnOff::OFF,
+    hitbox_info: OnOff::OFF,
     input_display: InputDisplay::SMASH,
     input_display_status: OnOff::OFF,
     hud: OnOff::ON,
@@ -156,6 +161,7 @@ pub static BASE_MENU: TrainingModpackMenu = TrainingModpackMenu {
     shield_tilt: Direction::empty(),
     stage_hazards: OnOff::OFF,
     state_tint: OnOff::OFF,
+    state_tint_in_out: OnOff::ON,
     tech_state: TechFlags::all(),
     throw_delay: MedDelay::empty(),
     throw_state: ThrowOption::NONE,
@@ -737,7 +743,28 @@ pub unsafe fn create_app<'a>() -> App<'a> {
     misc_tab_submenus.push(OnOff::to_submenu(
         "State Tint",
         "state_tint",
-        "Tint fighters green when actionable and red when not. Tech and ledge options get their own colors.",
+        "Tint fighters green normally and by DI direction during hitstun (red if no DI). Tech and ledge options get their own colors.",
+        ToggleSingle,
+        false,
+    ));
+    misc_tab_submenus.push(OnOff::to_submenu(
+        "State Tint: DI In/Out",
+        "state_tint_in_out",
+        "On: color DI as In/Out relative to the opponent (warm = In, cool = Out). Off: color DI by screen direction.",
+        ToggleSingle,
+        false,
+    ));
+    misc_tab_submenus.push(OnOff::to_submenu(
+        "Combo Check",
+        "combo_check",
+        "Show the CPU's remaining hitstun when you can act, and alert when it escapes hitstun before you hit again (CPU flashes white, shows frames late).",
+        ToggleSingle,
+        false,
+    ));
+    misc_tab_submenus.push(OnOff::to_submenu(
+        "Hitbox Info",
+        "hitbox_info",
+        "When your attack connects, show which hitbox ID hit (and its damage if only one hitbox was active). Full data is written to the log.",
         ToggleSingle,
         false,
     ));
