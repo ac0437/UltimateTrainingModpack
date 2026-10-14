@@ -737,7 +737,7 @@ pub unsafe fn create_app<'a>() -> App<'a> {
     misc_tab_submenus.push(OnOff::to_submenu(
         "State Tint",
         "state_tint",
-        "Tint fighters green when actionable and red when not. Tech and ledge options get their own colors.",
+        "Tint fighters red during hitstun and green otherwise. Tech and ledge options get their own colors.",
         ToggleSingle,
         false,
     ));

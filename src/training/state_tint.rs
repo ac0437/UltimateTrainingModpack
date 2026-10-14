@@ -3,7 +3,7 @@
 //! Priority, highest first:
 //!   1. Ledge option (hanging, getup, roll, jump, attack)
 //!   2. Tech option (tech in place, roll forwards/backwards, missed tech and its getups)
-//!   3. Actionable (green) vs. not actionable (red)
+//!   3. In hitstun (red) vs. everything else (green)
 //!
 //! Every color lives in the palette block below, so retuning is a one-line change.
 //! The tint is applied with the same `ModelModule::set_color_rgb` blend that input
@@ -16,8 +16,7 @@ use smash::hash40;
 use smash::lib::lua_const::*;
 
 use crate::common::consts::OnOff;
-use crate::common::{is_fighter, MENU};
-use crate::training::combo::is_actionable;
+use crate::common::{is_fighter, is_in_hitstun, MENU};
 use crate::training::input_record::{set_color_rgb_2, PossessionState, POSSESSION};
 use training_mod_sync::*;
 
@@ -36,9 +35,9 @@ const fn rgb(r: f32, g: f32, b: f32) -> Tint {
 // Palette
 // ---------------------------------------------------------------------------
 
-// Actionability
-const ACTIONABLE: Tint = rgb(0.0, 1.0, 0.0); // green
-const NOT_ACTIONABLE: Tint = rgb(1.0, 0.0, 0.0); // red
+// Hitstun
+const FREE: Tint = rgb(0.0, 1.0, 0.0); // green: not in hitstun
+const HITSTUN: Tint = rgb(1.0, 0.0, 0.0); // red: in hitstun
 
 // Tech options
 const TECH_IN_PLACE: Tint = rgb(0.0, 1.0, 1.0); // cyan (also wall / ceiling tech)
@@ -145,10 +144,10 @@ unsafe fn pick_tint(module_accessor: *mut BattleObjectModuleAccessor) -> Tint {
     if let Some(tint) = tech_tint(module_accessor, status) {
         return tint;
     }
-    if is_actionable(module_accessor) {
-        ACTIONABLE
+    if is_in_hitstun(&mut *module_accessor) {
+        HITSTUN
     } else {
-        NOT_ACTIONABLE
+        FREE
     }
 }
 
