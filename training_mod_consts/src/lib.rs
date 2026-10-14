@@ -36,6 +36,7 @@ pub struct TrainingModpackMenu {
     pub frame_advantage: OnOff,
     pub full_hop: BoolFlag,
     pub hitbox_vis: OnOff,
+    pub hitbox_info: OnOff,
     pub input_display: InputDisplay,
     pub input_display_status: OnOff,
     pub hud: OnOff,
@@ -131,6 +132,7 @@ pub static BASE_MENU: TrainingModpackMenu = TrainingModpackMenu {
     frame_advantage: OnOff::OFF,
     full_hop: BoolFlag::TRUE,
     hitbox_vis: OnOff::OFF,
+    hitbox_info: OnOff::OFF,
     input_display: InputDisplay::SMASH,
     input_display_status: OnOff::OFF,
     hud: OnOff::ON,
@@ -756,6 +758,13 @@ pub unsafe fn create_app<'a>() -> App<'a> {
         "Combo Check",
         "combo_check",
         "Show the CPU's remaining hitstun when you can act, and alert when it escapes hitstun before you hit again (CPU flashes white, shows frames late).",
+        ToggleSingle,
+        false,
+    ));
+    misc_tab_submenus.push(OnOff::to_submenu(
+        "Hitbox Info",
+        "hitbox_info",
+        "When your attack connects, show which hitbox ID hit (and its damage if only one hitbox was active). Full data is written to the log.",
         ToggleSingle,
         false,
     ));
