@@ -26,6 +26,7 @@ pub struct TrainingModpackMenu {
     pub buff_state: BuffOption,
     pub character_item: CharacterItem,
     pub clatter_strength: ClatterFrequency,
+    pub combo_check: OnOff,
     pub crouch: OnOff,
     pub di_state: Direction,
     pub falling_aerials: BoolFlag,
@@ -120,6 +121,7 @@ pub static BASE_MENU: TrainingModpackMenu = TrainingModpackMenu {
     buff_state: BuffOption::empty(),
     character_item: CharacterItem::NONE,
     clatter_strength: ClatterFrequency::NONE,
+    combo_check: OnOff::OFF,
     crouch: OnOff::OFF,
     di_state: Direction::empty(),
     falling_aerials: BoolFlag::FALSE,
@@ -747,6 +749,13 @@ pub unsafe fn create_app<'a>() -> App<'a> {
         "State Tint: DI In/Out",
         "state_tint_in_out",
         "On: color DI as In/Out relative to the opponent (warm = In, cool = Out). Off: color DI by screen direction.",
+        ToggleSingle,
+        false,
+    ));
+    misc_tab_submenus.push(OnOff::to_submenu(
+        "Combo Check",
+        "combo_check",
+        "Show the CPU's remaining hitstun when you can act, and alert when it escapes hitstun before you hit again (CPU flashes white, shows frames late).",
         ToggleSingle,
         false,
     ));
