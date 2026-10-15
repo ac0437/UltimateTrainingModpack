@@ -755,16 +755,16 @@ pub unsafe fn create_app<'a>() -> App<'a> {
         false,
     ));
     misc_tab_submenus.push(OnOff::to_submenu(
-        "Combo Check",
+        "Hitstun Left",
         "combo_check",
-        "Show the CPU's remaining hitstun when you can act, and alert when it escapes hitstun before you hit again (CPU flashes white, shows frames late).",
+        "When you can act while the CPU is still in hitstun, show how many hitstun frames it has left (e.g. 5f).",
         ToggleSingle,
         false,
     ));
     misc_tab_submenus.push(OnOff::to_submenu(
         "Hitbox Info",
         "hitbox_info",
-        "When your attack connects, show which hitbox ID hit (and its damage if only one hitbox was active). Full data is written to the log.",
+        "When your attack connects, show which hitbox hit and its damage, matched against the damage the CPU took. Full data is written to the log.",
         ToggleSingle,
         false,
     ));
