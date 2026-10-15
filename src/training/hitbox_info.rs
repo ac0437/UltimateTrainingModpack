@@ -1,33 +1,43 @@
 //! "Hitbox Info": shows which hitbox of yours connected.
 //!
-//! When one of the player's attacks connects, a notification shows the active hitbox ID(s).
-//! The game reports "an attack connected", not which hitbox did it, so:
-//!   - one active hitbox: exact. Shows `#ID` and its damage, in that ID's Hitbox Visualization color.
-//!   - several active hitboxes (e.g. overlapping sweetspot/sourspot): shows the list of active IDs.
+//! The game says "one of your attacks connected", not which hitbox did it, so this works it out:
 //!
-//! The full data (damage, size, angle, knockback) of every active hitbox is written to the
-//! mod's log file on each connect.
+//!   1. Every hitbox active when the hit landed is recorded with its damage and its position in
+//!      the world (a sphere, or a capsule between two points).
+//!   2. The hitboxes whose damage matches what the opponent actually lost are kept.
+//!   3. Of those, the ones that physically overlap the opponent's body (approximated as a
+//!      vertical capsule) are kept, and the lowest-numbered one is reported.
 //!
-//! This does not identify the opponent's hurtbox.
+//! Display: `#1 4.8%` is a confident answer; `#1? 4.8%` means no hitbox overlapped the
+//! approximated body and the nearest one is shown as a guess. The opponent's real hurtboxes are
+//! not read, so overlap is approximate. Everything the check saw is appended to
+//! `hitbox_debug.txt` in the TrainingModpack folder on the SD card.
+
+use std::fs::OpenOptions;
+use std::io::Write;
 
 use skyline::nn::ui2d::ResColor;
 use smash::app::lua_bind::*;
 use smash::app::BattleObjectModuleAccessor;
+use smash::hash40;
 use smash::lib::lua_const::*;
+use smash::phx::{Hash40, Vector3f};
 
 use crate::common::consts::{FighterId, OnOff};
-use crate::common::MENU;
+use crate::common::{try_get_module_accessor, MENU};
+use crate::consts::TRAINING_MODPACK_ROOT;
 use crate::hitbox_visualizer::ID_COLORS;
-use crate::info;
-use crate::training::ui::notifications::{clear_notification, color_notification};
+use crate::training::info_box;
 use training_mod_sync::*;
 
-const HEADER: &str = "Hitbox";
-const NOTIFICATION_FRAMES: u32 = 90;
 /// Hitbox IDs 0..8, the same range the Hitbox Visualization option covers
 const HITBOX_IDS: i32 = 8;
-/// Most IDs listed in the notification before it is cut off with a "+"
-const MAX_IDS_SHOWN: usize = 3;
+/// Frames to wait after a hit for the opponent's damage to change before giving up
+const DAMAGE_WAIT_FRAMES: u32 = 4;
+/// Hitboxes whose damage is this close to the best match are kept as ties
+const DAMAGE_TOLERANCE: f32 = 0.25;
+/// Opponent body radius as a fraction of their height (hip to feet, doubled)
+const BODY_RADIUS_FRACTION: f32 = 0.25;
 
 const WHITE: ResColor = ResColor {
     r: 255,
@@ -36,7 +46,43 @@ const WHITE: ResColor = ResColor {
     a: 255,
 };
 
+type P3 = [f32; 3];
+
+/// An active hitbox in world space: a sphere, or a capsule from `a` to `b`
+#[derive(Clone, Copy, Debug)]
+struct Hitbox {
+    id: i32,
+    damage: f32,
+    size: f32,
+    a: P3,
+    b: P3,
+    node: u64,
+}
+
+/// The opponent's body approximated as a vertical capsule
+#[derive(Clone, Copy, Debug)]
+struct Body {
+    bottom: P3,
+    top: P3,
+    radius: f32,
+}
+
+/// A hit waiting for the opponent's damage to change
+#[derive(Clone)]
+struct Pending {
+    hitboxes: Vec<Hitbox>,
+    body: Option<Body>,
+    edge_frame: u32,
+}
+
+static FRAME: RwLock<u32> = RwLock::new(0);
 static WAS_INFLICTING: RwLock<bool> = RwLock::new(false);
+// The opponent's damage last frame, or negative before the first reading
+static LAST_CPU_DAMAGE: RwLock<f32> = RwLock::new(-1.0);
+// The most recent damage increase and the frame it happened on
+static LAST_INCREASE: RwLock<f32> = RwLock::new(0.0);
+static LAST_INCREASE_FRAME: RwLock<Option<u32>> = RwLock::new(None);
+static PENDING: RwLock<Option<Pending>> = RwLock::new(None);
 
 fn id_color(id: i32) -> ResColor {
     let c = ID_COLORS[(id as usize) % ID_COLORS.len()];
@@ -48,16 +94,239 @@ fn id_color(id: i32) -> ResColor {
     }
 }
 
-fn format_ids(ids: &[i32]) -> String {
-    let shown: Vec<String> = ids
-        .iter()
-        .take(MAX_IDS_SHOWN)
-        .map(|id| format!("#{id}"))
-        .collect();
-    let more = if ids.len() > MAX_IDS_SHOWN { "+" } else { "" };
-    format!("{}{more}", shown.join("/"))
+fn sub(a: P3, b: P3) -> P3 {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn dot(a: P3, b: P3) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
+/// Shortest distance between segments p1-q1 and p2-q2 (a point is a zero-length segment)
+fn segment_distance(p1: P3, q1: P3, p2: P3, q2: P3) -> f32 {
+    let d1 = sub(q1, p1);
+    let d2 = sub(q2, p2);
+    let r = sub(p1, p2);
+    let a = dot(d1, d1);
+    let e = dot(d2, d2);
+    let f = dot(d2, r);
+    let eps = 1e-8;
+    let (s, t);
+    if a <= eps && e <= eps {
+        s = 0.0;
+        t = 0.0;
+    } else if a <= eps {
+        s = 0.0;
+        t = (f / e).clamp(0.0, 1.0);
+    } else {
+        let c = dot(d1, r);
+        if e <= eps {
+            t = 0.0;
+            s = (-c / a).clamp(0.0, 1.0);
+        } else {
+            let b = dot(d1, d2);
+            let denom = a * e - b * b;
+            let mut s0 = if denom > eps {
+                ((b * f - c * e) / denom).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let mut t0 = (b * s0 + f) / e;
+            if t0 < 0.0 {
+                t0 = 0.0;
+                s0 = (-c / a).clamp(0.0, 1.0);
+            } else if t0 > 1.0 {
+                t0 = 1.0;
+                s0 = ((b - c) / a).clamp(0.0, 1.0);
+            }
+            s = s0;
+            t = t0;
+        }
+    }
+    let c1 = [p1[0] + d1[0] * s, p1[1] + d1[1] * s, p1[2] + d1[2] * s];
+    let c2 = [p2[0] + d2[0] * t, p2[1] + d2[1] * t, p2[2] + d2[2] * t];
+    let d = sub(c1, c2);
+    dot(d, d).sqrt()
+}
+
+/// Distance between the surfaces of a hitbox and the body; negative when they overlap
+fn gap(hitbox: &Hitbox, body: &Body) -> f32 {
+    segment_distance(hitbox.a, hitbox.b, body.bottom, body.top) - hitbox.size - body.radius
+}
+
+/// The hitboxes whose damage best matches the damage dealt, plus any tied with the best
+fn narrow(hitboxes: &[Hitbox], dealt: f32) -> Vec<Hitbox> {
+    let best = hitboxes
+        .iter()
+        .map(|h| (h.damage - dealt).abs())
+        .fold(f32::MAX, f32::min);
+    hitboxes
+        .iter()
+        .copied()
+        .filter(|h| (h.damage - dealt).abs() <= best + DAMAGE_TOLERANCE)
+        .collect()
+}
+
+/// Picks the hitbox that connected. Returns it and whether the answer is confident.
+fn choose(candidates: &[Hitbox], body: Option<&Body>) -> Option<(Hitbox, bool)> {
+    if let [only] = candidates {
+        return Some((*only, true));
+    }
+    let body = body?;
+    let overlapping = candidates
+        .iter()
+        .filter(|h| gap(h, body) <= 0.0)
+        .min_by_key(|h| h.id);
+    if let Some(h) = overlapping {
+        return Some((*h, true));
+    }
+    candidates
+        .iter()
+        .min_by(|a, b| gap(a, body).total_cmp(&gap(b, body)))
+        .map(|h| (*h, false))
+}
+
+fn log_line(line: &str) {
+    let path = format!("{TRAINING_MODPACK_ROOT}/hitbox_debug.txt");
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+unsafe fn joint_position(
+    module_accessor: *mut BattleObjectModuleAccessor,
+    node: u64,
+    offset: P3,
+) -> P3 {
+    let offset = Vector3f {
+        x: offset[0],
+        y: offset[1],
+        z: offset[2],
+    };
+    let mut out = Vector3f {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
+    ModelModule::joint_global_position_with_offset(
+        module_accessor,
+        Hash40 { hash: node },
+        &offset,
+        &mut out,
+        true,
+    );
+    [out.x, out.y, out.z]
+}
+
+/// Every active hitbox of the player, in world space
+unsafe fn active_hitboxes(module_accessor: *mut BattleObjectModuleAccessor) -> Vec<Hitbox> {
+    (0..HITBOX_IDS)
+        .filter_map(|id| {
+            if !AttackModule::is_attack(module_accessor, id, false) {
+                return None;
+            }
+            let data = *AttackModule::attack_data(module_accessor, id, false);
+            let a = joint_position(module_accessor, data.node, [data.x, data.y, data.z]);
+            let is_capsule = data.x2 != 0.0 || data.y2 != 0.0 || data.z2 != 0.0;
+            let b = if is_capsule {
+                joint_position(module_accessor, data.node, [data.x2, data.y2, data.z2])
+            } else {
+                a
+            };
+            Some(Hitbox {
+                id,
+                damage: data.power,
+                size: data.size,
+                a,
+                b,
+                node: data.node,
+            })
+        })
+        .collect()
+}
+
+/// The opponent's body, from their feet and hip
+unsafe fn opponent_body(cpu: *mut BattleObjectModuleAccessor) -> Option<Body> {
+    let mut hip = Vector3f {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
+    ModelModule::joint_global_position(
+        cpu,
+        Hash40 {
+            hash: hash40("hip"),
+        },
+        &mut hip,
+        true,
+    );
+    let feet_y = PostureModule::pos_y(cpu);
+    let height = (hip.y - feet_y) * 2.0;
+    if height <= 0.0 {
+        return None;
+    }
+    Some(Body {
+        bottom: [hip.x, feet_y, hip.z],
+        top: [hip.x, feet_y + height, hip.z],
+        radius: height * BODY_RADIUS_FRACTION,
+    })
+}
+
+unsafe fn finish(
+    module_accessor: *mut BattleObjectModuleAccessor,
+    pending: &Pending,
+    dealt: Option<f32>,
+) {
+    let candidates = match dealt {
+        Some(dealt) => narrow(&pending.hitboxes, dealt),
+        None => pending.hitboxes.clone(),
+    };
+    let chosen = choose(&candidates, pending.body.as_ref());
+
+    let (message, color) = match (chosen, dealt) {
+        (Some((hitbox, confident)), _) => {
+            let mark = if confident { "" } else { "?" };
+            (
+                format!("#{}{mark} {:.1}%", hitbox.id, hitbox.damage),
+                id_color(hitbox.id),
+            )
+        }
+        (None, _) => ("unknown".to_string(), WHITE),
+    };
+
+    // Debug record, including the extra queries whose meaning is not confirmed yet
+    log_line(&format!(
+        "--- hit at frame {} | damage dealt {:?} | body {:?}",
+        pending.edge_frame, dealt, pending.body
+    ));
+    for hitbox in &pending.hitboxes {
+        let gap_text = pending
+            .body
+            .as_ref()
+            .map(|body| format!("{:.2}", gap(hitbox, body)))
+            .unwrap_or_else(|| "n/a".to_string());
+        log_line(&format!(
+            "  #{} damage {:.2} size {:.2} node {:#x} a {:?} b {:?} gap {}",
+            hitbox.id, hitbox.damage, hitbox.size, hitbox.node, hitbox.a, hitbox.b, gap_text
+        ));
+    }
+    for id in 0..HITBOX_IDS {
+        let logged = AttackModule::is_attack(module_accessor, id, true);
+        if logged {
+            let data = AttackModule::attack_data(module_accessor, id, true);
+            let damage = if data.is_null() {
+                "null".to_string()
+            } else {
+                format!("{:.2}", (*data).power)
+            };
+            log_line(&format!("  collision-log probe #{id}: damage {damage}"));
+        }
+    }
+    log_line(&format!("  result: {message}"));
+
+    info_box::show_hitbox(message, color);
+}
+
+/// Runs once per frame, from the player's update.
 pub unsafe fn once_per_frame(module_accessor: &mut BattleObjectModuleAccessor) {
     if read(&MENU).hitbox_info != OnOff::ON {
         return;
@@ -67,36 +336,113 @@ pub unsafe fn once_per_frame(module_accessor: &mut BattleObjectModuleAccessor) {
         return;
     }
 
-    // React once when a hit starts, not on every frame it stays true
+    let frame = read(&FRAME) + 1;
+    assign(&FRAME, frame);
+    let cpu = try_get_module_accessor(FighterId::CPU);
+
+    // Track the opponent's damage so a hit can be matched to the damage it did
+    if let Some(cpu) = cpu {
+        let damage = DamageModule::damage(cpu, 0);
+        let previous = read(&LAST_CPU_DAMAGE);
+        if previous >= 0.0 && damage > previous + 0.001 {
+            assign(&LAST_INCREASE, damage - previous);
+            assign(&LAST_INCREASE_FRAME, Some(frame));
+        }
+        assign(&LAST_CPU_DAMAGE, damage);
+    }
+
+    // A new hit: remember which hitboxes were active and where everyone was
     let inflicting = AttackModule::is_infliction(module_accessor, *COLLISION_KIND_MASK_HIT);
     let was_inflicting = read(&WAS_INFLICTING);
     assign(&WAS_INFLICTING, inflicting);
-    if !inflicting || was_inflicting {
-        return;
+    if inflicting && !was_inflicting {
+        let hitboxes = active_hitboxes(module_accessor);
+        if !hitboxes.is_empty() {
+            assign(
+                &PENDING,
+                Some(Pending {
+                    hitboxes,
+                    body: cpu.and_then(|cpu| opponent_body(cpu)),
+                    edge_frame: frame,
+                }),
+            );
+        }
     }
 
-    let active: Vec<i32> = (0..HITBOX_IDS)
-        .filter(|&id| AttackModule::is_attack(module_accessor, id, false))
-        .collect();
-    if active.is_empty() {
-        return;
+    // Resolve a pending hit once the damage shows up, or give up after a few frames.
+    // Damage can land a frame before the game reports the hit, hence the `+ 1`.
+    if let Some(pending) = read_clone(&PENDING) {
+        let damaged = read(&LAST_INCREASE_FRAME)
+            .filter(|&increase_frame| increase_frame + 1 >= pending.edge_frame);
+        if damaged.is_some() {
+            assign(&PENDING, None);
+            finish(module_accessor, &pending, Some(read(&LAST_INCREASE)));
+        } else if frame - pending.edge_frame >= DAMAGE_WAIT_FRAMES {
+            assign(&PENDING, None);
+            finish(module_accessor, &pending, None);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hb(id: i32, damage: f32, at: P3) -> Hitbox {
+        Hitbox {
+            id,
+            damage,
+            size: 3.0,
+            a: at,
+            b: at,
+            node: 0,
+        }
     }
 
-    for &id in &active {
-        let data = *AttackModule::attack_data(module_accessor, id, false);
-        info!(
-            "Hitbox #{id} active on hit: damage {:.1}, size {:.1}, angle {}, KBG {}, FKB {}, BKB {}",
-            data.power, data.size, data.vector, data.r_eff, data.r_fix, data.r_add
-        );
-    }
-
-    let (message, color) = if let [only] = active[..] {
-        let data = *AttackModule::attack_data(module_accessor, only, false);
-        (format!("#{only} {:.1}%", data.power), id_color(only))
-    } else {
-        (format_ids(&active), WHITE)
+    const BODY: Body = Body {
+        bottom: [0.0, 0.0, 0.0],
+        top: [0.0, 12.0, 0.0],
+        radius: 3.0,
     };
 
-    clear_notification(HEADER);
-    color_notification(HEADER.to_string(), message, NOTIFICATION_FRAMES, color);
+    #[test]
+    fn damage_picks_sweetspot() {
+        let hs = [hb(0, 12.0, [0.0; 3]), hb(1, 8.0, [0.0; 3])];
+        let n = narrow(&hs, 12.0);
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0].id, 0);
+    }
+
+    #[test]
+    fn geometry_breaks_equal_damage_ties() {
+        // all 4.8; only #2 reaches the body
+        let hs = [
+            hb(0, 4.8, [30.0, 6.0, 0.0]),
+            hb(1, 4.8, [20.0, 6.0, 0.0]),
+            hb(2, 4.8, [5.0, 6.0, 0.0]),
+        ];
+        let (picked, confident) = choose(&narrow(&hs, 4.8), Some(&BODY)).unwrap();
+        assert_eq!(picked.id, 2);
+        assert!(confident);
+    }
+
+    #[test]
+    fn lowest_id_wins_when_several_overlap() {
+        let hs = [hb(1, 4.8, [5.0, 6.0, 0.0]), hb(2, 4.8, [4.0, 6.0, 0.0])];
+        assert_eq!(choose(&hs, Some(&BODY)).unwrap().0.id, 1);
+    }
+
+    #[test]
+    fn nearest_is_a_guess() {
+        let hs = [hb(0, 4.8, [30.0, 6.0, 0.0]), hb(1, 4.8, [20.0, 6.0, 0.0])];
+        let (picked, confident) = choose(&hs, Some(&BODY)).unwrap();
+        assert_eq!(picked.id, 1);
+        assert!(!confident);
+    }
+
+    #[test]
+    fn capsule_distance() {
+        let d = segment_distance([0.0; 3], [10.0, 0.0, 0.0], [5.0, 4.0, 0.0], [5.0, 8.0, 0.0]);
+        assert!((d - 4.0).abs() < 1e-4);
+    }
 }

@@ -755,16 +755,16 @@ pub unsafe fn create_app<'a>() -> App<'a> {
         false,
     ));
     misc_tab_submenus.push(OnOff::to_submenu(
-        "Combo Check",
+        "Combo Over Flash",
         "combo_check",
-        "Show the CPU's remaining hitstun when you can act, and alert when it escapes hitstun before you hit again (CPU flashes white, shows frames late).",
+        "Flash the CPU white when it escapes hitstun without being hit again. Not triggered by KOs, grabs, knockdowns or techs.",
         ToggleSingle,
         false,
     ));
     misc_tab_submenus.push(OnOff::to_submenu(
         "Hitbox Info",
         "hitbox_info",
-        "When your attack connects, show which hitbox ID hit (and its damage if only one hitbox was active). Full data is written to the log.",
+        "When your attack connects, show which hitbox hit (e.g. #1 4.8%). Matched by damage, then by which hitbox overlaps the opponent; a ? means a guess. Details go to hitbox_debug.txt in the TrainingModpack folder.",
         ToggleSingle,
         false,
     ));

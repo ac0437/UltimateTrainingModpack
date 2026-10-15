@@ -1,4 +1,3 @@
-use skyline::nn::ui2d::ResColor;
 use smash::app::lua_bind::{CancelModule, WorkModule};
 use smash::app::BattleObjectModuleAccessor;
 use smash::lib::lua_const::*;
@@ -6,7 +5,7 @@ use smash::lib::lua_const::*;
 use crate::consts::Action;
 use crate::info;
 use crate::training::frame_counter;
-use crate::training::ui::notifications;
+use crate::training::info_box;
 use crate::try_get_module_accessor;
 
 use training_mod_consts::{FighterId, OnOff, MENU};
@@ -38,33 +37,7 @@ pub unsafe fn is_actionable(module_accessor: *mut BattleObjectModuleAccessor) ->
 
 fn update_frame_advantage(frame_advantage: i32) {
     if read(&MENU).frame_advantage == OnOff::ON {
-        // Prioritize notifications for Frame Advantage
-        notifications::clear_all_notifications();
-        notifications::color_notification(
-            "Frame Advantage".to_string(),
-            format!("{frame_advantage:+}"),
-            60,
-            match frame_advantage {
-                x if x < 0 => ResColor {
-                    r: 200,
-                    g: 8,
-                    b: 8,
-                    a: 255,
-                },
-                0 => ResColor {
-                    r: 0,
-                    g: 0,
-                    b: 0,
-                    a: 255,
-                },
-                _ => ResColor {
-                    r: 31,
-                    g: 198,
-                    b: 0,
-                    a: 255,
-                },
-            },
-        );
+        info_box::show_frame_advantage(frame_advantage);
     }
 }
 

@@ -31,6 +31,7 @@ pub mod crouch;
 pub mod directional_influence;
 pub mod frame_counter;
 pub mod hitbox_info;
+pub mod info_box;
 pub mod ledge;
 pub mod sdi;
 pub mod shield;
@@ -153,6 +154,7 @@ fn once_per_frame_per_fighter(module_accessor: &mut BattleObjectModuleAccessor) 
         combo_check::once_per_frame(module_accessor);
         combo_check::apply_flash(module_accessor);
         hitbox_info::once_per_frame(module_accessor);
+        info_box::tick(module_accessor);
         hitbox_visualizer::once_per_frame(module_accessor);
         save_states::save_states(module_accessor);
         tech::once_per_frame(module_accessor);
