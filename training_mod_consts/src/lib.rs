@@ -764,7 +764,7 @@ pub unsafe fn create_app<'a>() -> App<'a> {
     misc_tab_submenus.push(OnOff::to_submenu(
         "Hitbox Info",
         "hitbox_info",
-        "When your attack connects, show which hitbox hit (e.g. #1 4.8%). Matched by damage, then by which hitbox overlaps the opponent; a ? means a guess. Details go to hitbox_debug.txt in the TrainingModpack folder.",
+        "When your attack connects, show which hitbox hit and on which move frame (e.g. #1 F8 4.8%). Matched by damage, then by which hitbox overlaps the opponent; a ? means a guess.",
         ToggleSingle,
         false,
     ));

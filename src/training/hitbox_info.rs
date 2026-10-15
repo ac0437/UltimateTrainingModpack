@@ -8,13 +8,11 @@
 //!   3. Of those, the ones that physically overlap the opponent's body (approximated as a
 //!      vertical capsule) are kept, and the lowest-numbered one is reported.
 //!
-//! Display: `#1 4.8%` is a confident answer; `#1? 4.8%` means no hitbox overlapped the
+//! Display: `#1 F8 4.8%` (hitbox 1, on frame 8 of the move, 4.8% damage) is a confident
+//! answer; `#1? F8 4.8%` means no hitbox overlapped the
 //! approximated body and the nearest one is shown as a guess. The opponent's real hurtboxes are
-//! not read, so overlap is approximate. Everything the check saw is appended to
-//! `hitbox_debug.txt` in the TrainingModpack folder on the SD card.
-
-use std::fs::OpenOptions;
-use std::io::Write;
+//! not read, so overlap is approximate. Nothing is written to the SD card, so it costs no
+//! frame time beyond a few joint lookups when a hit lands.
 
 use skyline::nn::ui2d::ResColor;
 use smash::app::lua_bind::*;
@@ -25,7 +23,6 @@ use smash::phx::{Hash40, Vector3f};
 
 use crate::common::consts::{FighterId, OnOff};
 use crate::common::{try_get_module_accessor, MENU};
-use crate::consts::TRAINING_MODPACK_ROOT;
 use crate::hitbox_visualizer::ID_COLORS;
 use crate::training::info_box;
 use training_mod_sync::*;
@@ -36,6 +33,9 @@ const HITBOX_IDS: i32 = 8;
 const DAMAGE_WAIT_FRAMES: u32 = 4;
 /// Hitboxes whose damage is this close to the best match are kept as ties
 const DAMAGE_TOLERANCE: f32 = 0.25;
+/// Added to the animation frame to match the frame numbering of frame data. The animation
+/// starts at 0; if the shown frame is one lower than your frame data, set this to 1.
+const MOVE_FRAME_OFFSET: i32 = 0;
 /// Opponent body radius as a fraction of their height (hip to feet, doubled)
 const BODY_RADIUS_FRACTION: f32 = 0.25;
 
@@ -56,7 +56,6 @@ struct Hitbox {
     size: f32,
     a: P3,
     b: P3,
-    node: u64,
 }
 
 /// The opponent's body approximated as a vertical capsule
@@ -73,6 +72,8 @@ struct Pending {
     hitboxes: Vec<Hitbox>,
     body: Option<Body>,
     edge_frame: u32,
+    /// The attacker's animation frame when the hit landed
+    move_frame: i32,
 }
 
 static FRAME: RwLock<u32> = RwLock::new(0);
@@ -185,13 +186,6 @@ fn choose(candidates: &[Hitbox], body: Option<&Body>) -> Option<(Hitbox, bool)> 
         .map(|h| (*h, false))
 }
 
-fn log_line(line: &str) {
-    let path = format!("{TRAINING_MODPACK_ROOT}/hitbox_debug.txt");
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "{line}");
-    }
-}
-
 unsafe fn joint_position(
     module_accessor: *mut BattleObjectModuleAccessor,
     node: u64,
@@ -238,7 +232,6 @@ unsafe fn active_hitboxes(module_accessor: *mut BattleObjectModuleAccessor) -> V
                 size: data.size,
                 a,
                 b,
-                node: data.node,
             })
         })
         .collect()
@@ -271,11 +264,7 @@ unsafe fn opponent_body(cpu: *mut BattleObjectModuleAccessor) -> Option<Body> {
     })
 }
 
-unsafe fn finish(
-    module_accessor: *mut BattleObjectModuleAccessor,
-    pending: &Pending,
-    dealt: Option<f32>,
-) {
+fn finish(pending: &Pending, dealt: Option<f32>) {
     let candidates = match dealt {
         Some(dealt) => narrow(&pending.hitboxes, dealt),
         None => pending.hitboxes.clone(),
@@ -286,42 +275,15 @@ unsafe fn finish(
         (Some((hitbox, confident)), _) => {
             let mark = if confident { "" } else { "?" };
             (
-                format!("#{}{mark} {:.1}%", hitbox.id, hitbox.damage),
+                format!(
+                    "#{}{mark} F{} {:.1}%",
+                    hitbox.id, pending.move_frame, hitbox.damage
+                ),
                 id_color(hitbox.id),
             )
         }
         (None, _) => ("unknown".to_string(), WHITE),
     };
-
-    // Debug record, including the extra queries whose meaning is not confirmed yet
-    log_line(&format!(
-        "--- hit at frame {} | damage dealt {:?} | body {:?}",
-        pending.edge_frame, dealt, pending.body
-    ));
-    for hitbox in &pending.hitboxes {
-        let gap_text = pending
-            .body
-            .as_ref()
-            .map(|body| format!("{:.2}", gap(hitbox, body)))
-            .unwrap_or_else(|| "n/a".to_string());
-        log_line(&format!(
-            "  #{} damage {:.2} size {:.2} node {:#x} a {:?} b {:?} gap {}",
-            hitbox.id, hitbox.damage, hitbox.size, hitbox.node, hitbox.a, hitbox.b, gap_text
-        ));
-    }
-    for id in 0..HITBOX_IDS {
-        let logged = AttackModule::is_attack(module_accessor, id, true);
-        if logged {
-            let data = AttackModule::attack_data(module_accessor, id, true);
-            let damage = if data.is_null() {
-                "null".to_string()
-            } else {
-                format!("{:.2}", (*data).power)
-            };
-            log_line(&format!("  collision-log probe #{id}: damage {damage}"));
-        }
-    }
-    log_line(&format!("  result: {message}"));
 
     info_box::show_hitbox(message, color);
 }
@@ -364,6 +326,8 @@ pub unsafe fn once_per_frame(module_accessor: &mut BattleObjectModuleAccessor) {
                     hitboxes,
                     body: cpu.and_then(|cpu| opponent_body(cpu)),
                     edge_frame: frame,
+                    move_frame: MotionModule::frame(module_accessor).floor() as i32
+                        + MOVE_FRAME_OFFSET,
                 }),
             );
         }
@@ -376,10 +340,10 @@ pub unsafe fn once_per_frame(module_accessor: &mut BattleObjectModuleAccessor) {
             .filter(|&increase_frame| increase_frame + 1 >= pending.edge_frame);
         if damaged.is_some() {
             assign(&PENDING, None);
-            finish(module_accessor, &pending, Some(read(&LAST_INCREASE)));
+            finish(&pending, Some(read(&LAST_INCREASE)));
         } else if frame - pending.edge_frame >= DAMAGE_WAIT_FRAMES {
             assign(&PENDING, None);
-            finish(module_accessor, &pending, None);
+            finish(&pending, None);
         }
     }
 }
@@ -395,7 +359,6 @@ mod tests {
             size: 3.0,
             a: at,
             b: at,
-            node: 0,
         }
     }
 
