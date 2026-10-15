@@ -8,7 +8,8 @@
 //!   3. Of those, the ones that physically overlap the opponent's body (approximated as a
 //!      vertical capsule) are kept, and the lowest-numbered one is reported.
 //!
-//! Display: `#1 4.8%` is a confident answer; `#1? 4.8%` means no hitbox overlapped the
+//! Display: `#1 F8 4.8%` (hitbox 1, on frame 8 of the move, 4.8% damage) is a confident
+//! answer; `#1? F8 4.8%` means no hitbox overlapped the
 //! approximated body and the nearest one is shown as a guess. The opponent's real hurtboxes are
 //! not read, so overlap is approximate. Nothing is written to the SD card, so it costs no
 //! frame time beyond a few joint lookups when a hit lands.
@@ -32,6 +33,9 @@ const HITBOX_IDS: i32 = 8;
 const DAMAGE_WAIT_FRAMES: u32 = 4;
 /// Hitboxes whose damage is this close to the best match are kept as ties
 const DAMAGE_TOLERANCE: f32 = 0.25;
+/// Added to the animation frame to match the frame numbering of frame data. The animation
+/// starts at 0; if the shown frame is one lower than your frame data, set this to 1.
+const MOVE_FRAME_OFFSET: i32 = 0;
 /// Opponent body radius as a fraction of their height (hip to feet, doubled)
 const BODY_RADIUS_FRACTION: f32 = 0.25;
 
@@ -68,6 +72,8 @@ struct Pending {
     hitboxes: Vec<Hitbox>,
     body: Option<Body>,
     edge_frame: u32,
+    /// The attacker's animation frame when the hit landed
+    move_frame: i32,
 }
 
 static FRAME: RwLock<u32> = RwLock::new(0);
@@ -269,7 +275,10 @@ fn finish(pending: &Pending, dealt: Option<f32>) {
         (Some((hitbox, confident)), _) => {
             let mark = if confident { "" } else { "?" };
             (
-                format!("#{}{mark} {:.1}%", hitbox.id, hitbox.damage),
+                format!(
+                    "#{}{mark} F{} {:.1}%",
+                    hitbox.id, pending.move_frame, hitbox.damage
+                ),
                 id_color(hitbox.id),
             )
         }
@@ -317,6 +326,8 @@ pub unsafe fn once_per_frame(module_accessor: &mut BattleObjectModuleAccessor) {
                     hitboxes,
                     body: cpu.and_then(|cpu| opponent_body(cpu)),
                     edge_frame: frame,
+                    move_frame: MotionModule::frame(module_accessor).floor() as i32
+                        + MOVE_FRAME_OFFSET,
                 }),
             );
         }
