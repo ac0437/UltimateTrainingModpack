@@ -5,7 +5,7 @@
 //! hitbox and the latest number (frame advantage or hitstun left) and draws them together:
 //!
 //!   - hitbox only:  header "Hitbox",        message "#2 12.0%"
-//!   - number only:  header "Frame Advantage" / "Hitstun Left", message "+4" / "5f"
+//!   - number only:  header "Frame Advantage", message "+4"
 //!   - both:         header "#2 12.0%",       message "+4" (the number, in its own color)
 //!
 //! A new hit clears the previous number, since it belongs to the previous hit.
@@ -53,7 +53,6 @@ struct HitboxLine {
 #[derive(Clone, Copy)]
 enum Number {
     FrameAdvantage(i32),
-    HitstunLeft(i32),
 }
 
 #[derive(Clone, Copy)]
@@ -77,7 +76,6 @@ fn describe(number: Number) -> (&'static str, String, ResColor) {
                 _ => GREEN,
             },
         ),
-        Number::HitstunLeft(frames) => ("Hitstun Left", format!("{frames}f"), GREEN),
     }
 }
 
@@ -135,17 +133,6 @@ pub fn show_frame_advantage(frames: i32) {
         &NUMBER,
         Some(NumberLine {
             number: Number::FrameAdvantage(frames),
-            frames_left: NUMBER_FRAMES,
-        }),
-    );
-    refresh();
-}
-
-pub fn show_hitstun_left(frames: i32) {
-    assign(
-        &NUMBER,
-        Some(NumberLine {
-            number: Number::HitstunLeft(frames),
             frames_left: NUMBER_FRAMES,
         }),
     );

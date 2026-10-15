@@ -755,9 +755,9 @@ pub unsafe fn create_app<'a>() -> App<'a> {
         false,
     ));
     misc_tab_submenus.push(OnOff::to_submenu(
-        "Hitstun Left",
+        "Combo Over Flash",
         "combo_check",
-        "When you can act while the CPU is still in hitstun, show how many hitstun frames it has left (e.g. 5f).",
+        "Flash the CPU white when it escapes hitstun without being hit again. Not triggered by KOs, grabs, knockdowns or techs.",
         ToggleSingle,
         false,
     ));
