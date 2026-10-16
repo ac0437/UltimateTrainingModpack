@@ -27,6 +27,7 @@ pub struct TrainingModpackMenu {
     pub character_item: CharacterItem,
     pub clatter_strength: ClatterFrequency,
     pub combo_check: OnOff,
+    pub auto_reset: OnOff,
     pub crouch: OnOff,
     pub di_state: Direction,
     pub falling_aerials: BoolFlag,
@@ -123,6 +124,7 @@ pub static BASE_MENU: TrainingModpackMenu = TrainingModpackMenu {
     character_item: CharacterItem::NONE,
     clatter_strength: ClatterFrequency::NONE,
     combo_check: OnOff::OFF,
+    auto_reset: OnOff::OFF,
     crouch: OnOff::OFF,
     di_state: Direction::empty(),
     falling_aerials: BoolFlag::FALSE,
@@ -762,9 +764,16 @@ pub unsafe fn create_app<'a>() -> App<'a> {
         false,
     ));
     misc_tab_submenus.push(OnOff::to_submenu(
+        "Combo Auto-Reset",
+        "auto_reset",
+        "A moment after a combo ends, reload the save state and keep score (completed/attempts, streak). A kill, grab, knockdown or tech counts as completed; the CPU escaping counts as a drop. Needs Save States on. Turn off and on to reset the score.",
+        ToggleSingle,
+        false,
+    ));
+    misc_tab_submenus.push(OnOff::to_submenu(
         "Hitbox Info",
         "hitbox_info",
-        "When your attack connects, show which hitbox hit and on which move frame (e.g. #1 F8 4.8%). Matched by damage, then by which hitbox overlaps the opponent; a ? means a guess.",
+        "When your attack connects, show which hitbox hit and on which move frame (e.g. #1 F8), then the frame advantage once it is known (#1 F8 +3). Matched by damage, then by which hitbox overlaps the opponent; a ? means a guess.",
         ToggleSingle,
         false,
     ));
