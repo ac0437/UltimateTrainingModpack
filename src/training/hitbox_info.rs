@@ -8,11 +8,13 @@
 //!   3. Of those, the ones that physically overlap the opponent's body (approximated as a
 //!      vertical capsule) are kept, and the lowest-numbered one is reported.
 //!
-//! Display: `#1 F8` (hitbox 1, on frame 8 of the move) is a confident answer; `#1? F8` means no hitbox overlapped the
+//! Display: `#1 F8 4.8%` (hitbox 1, on frame 8 of the move, 4.8% damage) is a confident
+//! answer; `#1? F8 4.8%` means no hitbox overlapped the
 //! approximated body and the nearest one is shown as a guess. The opponent's real hurtboxes are
 //! not read, so overlap is approximate. Nothing is written to the SD card, so it costs no
 //! frame time beyond a few joint lookups when a hit lands.
 
+use skyline::nn::ui2d::ResColor;
 use smash::app::lua_bind::*;
 use smash::app::BattleObjectModuleAccessor;
 use smash::hash40;
@@ -21,6 +23,7 @@ use smash::phx::{Hash40, Vector3f};
 
 use crate::common::consts::{FighterId, OnOff};
 use crate::common::{try_get_module_accessor, MENU};
+use crate::hitbox_visualizer::ID_COLORS;
 use crate::training::info_box;
 use training_mod_sync::*;
 
@@ -35,6 +38,13 @@ const DAMAGE_TOLERANCE: f32 = 0.25;
 const MOVE_FRAME_OFFSET: i32 = 0;
 /// Opponent body radius as a fraction of their height (hip to feet, doubled)
 const BODY_RADIUS_FRACTION: f32 = 0.25;
+
+const WHITE: ResColor = ResColor {
+    r: 255,
+    g: 255,
+    b: 255,
+    a: 255,
+};
 
 type P3 = [f32; 3];
 
@@ -74,6 +84,16 @@ static LAST_CPU_DAMAGE: RwLock<f32> = RwLock::new(-1.0);
 static LAST_INCREASE: RwLock<f32> = RwLock::new(0.0);
 static LAST_INCREASE_FRAME: RwLock<Option<u32>> = RwLock::new(None);
 static PENDING: RwLock<Option<Pending>> = RwLock::new(None);
+
+fn id_color(id: i32) -> ResColor {
+    let c = ID_COLORS[(id as usize) % ID_COLORS.len()];
+    ResColor {
+        r: (c.x * 255.0) as u8,
+        g: (c.y * 255.0) as u8,
+        b: (c.z * 255.0) as u8,
+        a: 255,
+    }
+}
 
 fn sub(a: P3, b: P3) -> P3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -251,15 +271,21 @@ fn finish(pending: &Pending, dealt: Option<f32>) {
     };
     let chosen = choose(&candidates, pending.body.as_ref());
 
-    let message = match chosen {
-        Some((hitbox, confident)) => {
+    let (message, color) = match (chosen, dealt) {
+        (Some((hitbox, confident)), _) => {
             let mark = if confident { "" } else { "?" };
-            format!("#{}{mark} F{}", hitbox.id, pending.move_frame)
+            (
+                format!(
+                    "#{}{mark} F{} {:.1}%",
+                    hitbox.id, pending.move_frame, hitbox.damage
+                ),
+                id_color(hitbox.id),
+            )
         }
-        None => format!("F{}", pending.move_frame),
+        (None, _) => ("unknown".to_string(), WHITE),
     };
 
-    info_box::show_hitbox(message);
+    info_box::show_hitbox(message, color);
 }
 
 /// Runs once per frame, from the player's update.

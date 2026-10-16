@@ -233,25 +233,6 @@ unsafe fn get_slot() -> usize {
     }
 }
 
-static AUTO_RESET_REQUESTED: RwLock<bool> = RwLock::new(false);
-
-/// Asks for the selected save state to be loaded, as if the load button had been pressed.
-/// Does nothing unless save states are enabled.
-pub fn request_reset() {
-    if read(&MENU).save_state_enable == OnOff::ON {
-        assign(&AUTO_RESET_REQUESTED, true);
-    }
-}
-
-/// True once per `request_reset`
-fn take_reset_request() -> bool {
-    let requested = read(&AUTO_RESET_REQUESTED);
-    if requested {
-        assign(&AUTO_RESET_REQUESTED, false);
-    }
-    requested
-}
-
 pub unsafe fn is_killing() -> bool {
     let selected_slot = get_slot();
     (save_state_player(selected_slot).state == KillPlayer
@@ -427,6 +408,96 @@ pub unsafe fn on_death(fighter_kind: i32, module_accessor: &mut app::BattleObjec
     }
 }
 
+/// After a grounded save state load, the game can put a fighter standing under a pass-through
+/// platform on top of that platform instead. This watches the first frames after the load and
+/// puts the fighter back at the saved height if that happens.
+#[derive(Clone, Copy)]
+struct GroundWatch {
+    saved_y: f32,
+    frames_left: u32,
+    corrections: u32,
+}
+
+/// Frames watched after a grounded load
+const GROUND_WATCH_FRAMES: u32 = 12;
+/// How far above the saved height a fighter may be before it counts as snapped to a platform
+const GROUND_SNAP_TOLERANCE: f32 = 2.0;
+/// Most times the position is put back for one load
+const GROUND_MAX_CORRECTIONS: u32 = 3;
+
+// Indexed by fighter: 0 for the player, 1 for the CPU
+static GROUND_WATCH: RwLock<[Option<GroundWatch>; 2]> = RwLock::new([None, None]);
+
+fn watch_index(is_cpu: bool) -> usize {
+    usize::from(is_cpu)
+}
+
+fn ground_log(line: &str) {
+    use std::io::Write;
+    let path = format!(
+        "{}/save_state_debug.txt",
+        crate::consts::TRAINING_MODPACK_ROOT
+    );
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+fn start_ground_watch(is_cpu: bool, saved_y: f32) {
+    let mut watches = read(&GROUND_WATCH);
+    watches[watch_index(is_cpu)] = Some(GroundWatch {
+        saved_y,
+        frames_left: GROUND_WATCH_FRAMES,
+        corrections: 0,
+    });
+    assign(&GROUND_WATCH, watches);
+    ground_log(&format!(
+        "--- grounded load finished for {} (saved y {saved_y:.2})",
+        if is_cpu { "cpu" } else { "player" }
+    ));
+}
+
+unsafe fn check_ground_watch(module_accessor: *mut app::BattleObjectModuleAccessor, is_cpu: bool) {
+    let mut watches = read(&GROUND_WATCH);
+    let Some(mut watch) = watches[watch_index(is_cpu)] else {
+        return;
+    };
+
+    let x = PostureModule::pos_x(module_accessor);
+    let y = PostureModule::pos_y(module_accessor);
+    let z = PostureModule::pos_z(module_accessor);
+    let mut note = "";
+    if y > watch.saved_y + GROUND_SNAP_TOLERANCE && watch.corrections < GROUND_MAX_CORRECTIONS {
+        let pos = Vector3f {
+            x,
+            y: watch.saved_y,
+            z,
+        };
+        PostureModule::set_pos(module_accessor, &pos);
+        watch.corrections += 1;
+        note = " -> moved back down";
+    }
+    ground_log(&format!(
+        "  {} frame {}: pos ({x:.2}, {y:.2}) status {} situation {}{note}",
+        if is_cpu { "cpu" } else { "player" },
+        GROUND_WATCH_FRAMES - watch.frames_left,
+        StatusModule::status_kind(module_accessor),
+        StatusModule::situation_kind(module_accessor),
+    ));
+
+    watch.frames_left -= 1;
+    watches[watch_index(is_cpu)] = if watch.frames_left == 0 {
+        None
+    } else {
+        Some(watch)
+    };
+    assign(&GROUND_WATCH, watches);
+}
+
 pub unsafe fn save_states(module_accessor: &mut app::BattleObjectModuleAccessor) {
     if read(&MENU).save_state_enable == OnOff::OFF {
         return;
@@ -446,6 +517,9 @@ pub unsafe fn save_states(module_accessor: &mut app::BattleObjectModuleAccessor)
     let fighter_is_ptrainer = is_ptrainer(module_accessor);
     let fighter_is_popo = fighter_kind == *FIGHTER_KIND_POPO; // For making sure Popo doesn't steal Nana's PosMove
     let fighter_is_nana = fighter_kind == *FIGHTER_KIND_NANA; // Don't want Nana to reopen save states etc.
+    if !fighter_is_nana && save_state.state == NoAction {
+        check_ground_watch(module_accessor, is_cpu);
+    }
     let fighter_is_buffable = [
         *FIGHTER_KIND_BRAVE,
         *FIGHTER_KIND_CLOUD,
@@ -465,8 +539,7 @@ pub unsafe fn save_states(module_accessor: &mut app::BattleObjectModuleAccessor)
         && is_dead(module_accessor);
     let mut triggered_reset: bool = false;
     if !is_operation_cpu(module_accessor) && !fighter_is_nana {
-        triggered_reset = button_config::combo_passes(button_config::ButtonCombo::LoadState)
-            || take_reset_request();
+        triggered_reset = button_config::combo_passes(button_config::ButtonCombo::LoadState);
     }
     if (autoload_reset || triggered_reset) && !fighter_is_nana {
         if save_state.state == NoAction {
@@ -553,6 +626,7 @@ pub unsafe fn save_states(module_accessor: &mut app::BattleObjectModuleAccessor)
                 );
             } else {
                 save_state.state = NoAction;
+                start_ground_watch(is_cpu, save_state.y);
             }
         } else if save_state.situation_kind == SITUATION_KIND_AIR {
             if status != FIGHTER_STATUS_KIND_FALL {
