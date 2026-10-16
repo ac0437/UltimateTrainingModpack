@@ -233,6 +233,25 @@ unsafe fn get_slot() -> usize {
     }
 }
 
+static AUTO_RESET_REQUESTED: RwLock<bool> = RwLock::new(false);
+
+/// Asks for the selected save state to be loaded, as if the load button had been pressed.
+/// Does nothing unless save states are enabled.
+pub fn request_reset() {
+    if read(&MENU).save_state_enable == OnOff::ON {
+        assign(&AUTO_RESET_REQUESTED, true);
+    }
+}
+
+/// True once per `request_reset`
+fn take_reset_request() -> bool {
+    let requested = read(&AUTO_RESET_REQUESTED);
+    if requested {
+        assign(&AUTO_RESET_REQUESTED, false);
+    }
+    requested
+}
+
 pub unsafe fn is_killing() -> bool {
     let selected_slot = get_slot();
     (save_state_player(selected_slot).state == KillPlayer
@@ -446,7 +465,8 @@ pub unsafe fn save_states(module_accessor: &mut app::BattleObjectModuleAccessor)
         && is_dead(module_accessor);
     let mut triggered_reset: bool = false;
     if !is_operation_cpu(module_accessor) && !fighter_is_nana {
-        triggered_reset = button_config::combo_passes(button_config::ButtonCombo::LoadState);
+        triggered_reset = button_config::combo_passes(button_config::ButtonCombo::LoadState)
+            || take_reset_request();
     }
     if (autoload_reset || triggered_reset) && !fighter_is_nana {
         if save_state.state == NoAction {
